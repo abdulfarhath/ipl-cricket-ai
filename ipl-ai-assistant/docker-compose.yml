@@ -1,0 +1,71 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # One-shot: download Cricsheet data, build SQLite, embed + load Qdrant, exit.
+  bootstrap:
+    build: .
+    command: python app.py all
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      CUTOFF_DATE: "2025-12-31"
+    volumes:
+      - app_data:/data
+      - hf_cache:/root/.cache/huggingface
+    depends_on:
+      - qdrant
+
+  api:
+    build: .
+    command: python app.py api
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      # Full Agent -> MCP -> LLM chain: the api's agent calls tools through
+      # the mcp service over the Model Context Protocol.
+      MCP_URL: http://mcp:8765/mcp
+    ports:
+      - "8000:8000"
+    volumes:
+      - app_data:/data
+      - hf_cache:/root/.cache/huggingface
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mcp:
+        condition: service_started
+    restart: unless-stopped
+
+  mcp:
+    build: .
+    command: python app.py mcp
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      MCP_TRANSPORT: streamable-http
+      MCP_PORT: "8765"
+    ports:
+      - "8765:8765"
+    volumes:
+      - app_data:/data
+      - hf_cache:/root/.cache/huggingface
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  app_data:
+  hf_cache:

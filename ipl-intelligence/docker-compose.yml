@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ipl
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ipl}
+      POSTGRES_DB: ipl
+    volumes:
+      - postgres_data:/var/lib/postgresql/data   # data never lives in the image
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ipl"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  # one-shot: schema + cricsheet ingestion + validation + RAG embedding
+  ingest:
+    build: .
+    command: sh -c "python -m ingest.ingest && python -m rag.store"
+    environment: &env
+      DATABASE_URL: postgresql://ipl:${POSTGRES_PASSWORD:-ipl}@postgres:5432/ipl
+      REDIS_URL: redis://redis:6379/0
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-lite-latest}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - raw_data:/app/data
+      - hf_cache:/home/appuser/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment: *env
+    ports:
+      - "8000:8000"
+    volumes:
+      - hf_cache:/home/appuser/.cache/huggingface
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  mcp:
+    build: .
+    command: python -m mcp_server.server
+    environment:
+      <<: *env
+      MCP_TRANSPORT: streamable-http
+    ports:
+      - "8765:8765"
+    volumes:
+      - hf_cache:/home/appuser/.cache/huggingface
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  raw_data:
+  hf_cache:
