@@ -6,7 +6,11 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
     && pip install --no-cache-dir -r requirements.txt
 
 FROM deps AS runtime
-RUN useradd --create-home appuser
+# create volume mount points owned by the app user BEFORE switching to it,
+# so fresh named volumes inherit writable ownership
+RUN useradd --create-home appuser \
+    && mkdir -p /app/data /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /app/data /home/appuser/.cache
 COPY --chown=appuser core ./core
 COPY --chown=appuser db ./db
 COPY --chown=appuser ingest ./ingest

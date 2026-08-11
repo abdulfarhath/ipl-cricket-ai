@@ -97,14 +97,31 @@ def validate_file(data: dict) -> str | None:
     return None
 
 
+def _insert_officials_and_xi(match_id: str, info: dict, ids: Ids) -> None:
+    """Umpires/referees + playing XI. ON CONFLICT guards make this idempotent,
+    so it also backfills matches ingested before these tables existed."""
+    role_map = {"umpires": "umpire", "tv_umpires": "tv_umpire",
+                "reserve_umpires": "reserve_umpire", "match_referees": "match_referee"}
+    for key, role in role_map.items():
+        for person in (info.get("officials") or {}).get(key, []):
+            execute("INSERT INTO officials VALUES (%s, %s, %s) "
+                    "ON CONFLICT DO NOTHING", (match_id, person, role))
+    for team_name, players in (info.get("players") or {}).items():
+        tid = ids.team(team_name)
+        for p in players:
+            execute("INSERT INTO match_players VALUES (%s, %s, %s) "
+                    "ON CONFLICT DO NOTHING", (match_id, tid, ids.player(p)))
+
+
 def ingest_match(fp: Path, ids: Ids) -> tuple[int, int] | None:
-    if q1("SELECT 1 AS x FROM matches WHERE id = %s", (fp.stem,)):
-        return None  # idempotent re-runs: never double-insert deliveries
     data = json.loads(fp.read_text(encoding="utf-8"))
     reason = validate_file(data)
     if reason:
         return None
     info = data["info"]
+    if q1("SELECT 1 AS x FROM matches WHERE id = %s", (fp.stem,)):
+        _insert_officials_and_xi(fp.stem, info, ids)  # backfill only
+        return None  # idempotent re-runs: never double-insert deliveries
     dt = info["dates"][0]
     teams = info["teams"]
     outcome = info.get("outcome", {})
@@ -128,6 +145,7 @@ def ingest_match(fp: Path, ids: Ids) -> tuple[int, int] | None:
         by.get("runs") or by.get("wickets"),
         outcome.get("result", "normal"), ids.player(pom),
         (info.get("event") or {}).get("stage")))
+    _insert_officials_and_xi(fp.stem, info, ids)
 
     rows = []
     for inn_idx, inning in enumerate(data.get("innings", []), start=1):

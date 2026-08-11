@@ -117,6 +117,24 @@ GROUP BY d.match_id, m.season, d.bowler_id;
 CREATE INDEX IF NOT EXISTS idx_bi_batter ON batting_innings(batter_id);
 CREATE INDEX IF NOT EXISTS idx_bo_bowler ON bowling_innings(bowler_id);
 
+-- match officials (umpires, TV umpires, referees) — from Cricsheet info.officials
+CREATE TABLE IF NOT EXISTS officials (
+    match_id TEXT NOT NULL REFERENCES matches(id),
+    person   TEXT NOT NULL,
+    role     TEXT NOT NULL,   -- umpire | tv_umpire | reserve_umpire | match_referee
+    UNIQUE (match_id, person, role)
+);
+CREATE INDEX IF NOT EXISTS idx_off_person ON officials(person);
+
+-- playing XI per match per team — from Cricsheet info.players
+CREATE TABLE IF NOT EXISTS match_players (
+    match_id  TEXT NOT NULL REFERENCES matches(id),
+    team_id   INT NOT NULL REFERENCES teams(id),
+    player_id INT NOT NULL REFERENCES players(id),
+    UNIQUE (match_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mp_team ON match_players(team_id);
+
 -- ---------------------------------------------------------------- RAG (pgvector)
 CREATE TABLE IF NOT EXISTS documents (
     id        SERIAL PRIMARY KEY,

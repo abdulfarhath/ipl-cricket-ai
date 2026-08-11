@@ -30,11 +30,38 @@ def search_player(fragment: str) -> list[dict]:
 
 
 def _pid(name: str) -> int | None:
+    """Fuzzy identity resolution: exact -> alias -> unique substring/surname
+    match. Lets the agent pass 'Virat Kohli' directly (saves an LLM round)."""
     row = q1("SELECT id FROM players WHERE cricsheet_name = %s", (name,))
     if row:
         return row["id"]
     row = q1("SELECT player_id AS id FROM player_aliases WHERE alias = %s", (name,))
-    return row["id"] if row else None
+    if row:
+        return row["id"]
+    def _pick(hits: list[dict]) -> int | None:
+        if not hits:
+            return None
+        if len(hits) == 1:
+            return hits[0]["id"]
+        # ambiguous ("R Sharma" vs "RG Sharma"): pick the most-capped candidate
+        row = q1("""SELECT p.id, (SELECT COUNT(*) FROM deliveries d
+                                  WHERE d.batter_id = p.id OR d.bowler_id = p.id) AS n
+                    FROM players p WHERE p.id = ANY(%s)
+                    ORDER BY n DESC LIMIT 1""", ([h["id"] for h in hits],))
+        return row["id"] if row else None
+
+    parts = name.strip().split()
+    pid = _pick(q("SELECT id FROM players WHERE cricsheet_name ILIKE '%%' || %s || '%%' "
+                  "LIMIT 5", (name,)))
+    if pid:
+        return pid
+    if len(parts) >= 2:  # "Virat Kohli" -> initial 'V' + surname 'Kohli' -> "V Kohli"
+        pid = _pick(q("SELECT id FROM players WHERE cricsheet_name ILIKE %s LIMIT 5",
+                      (parts[0][0] + "%" + parts[-1],)))
+        if pid:
+            return pid
+    return _pick(q("SELECT id FROM players WHERE cricsheet_name ILIKE '%%' || %s || '%%' "
+                   "LIMIT 5", (parts[-1] if parts else "",)))
 
 
 def batting_stats(player: str, season: int | None = None) -> dict:
@@ -311,6 +338,26 @@ def records() -> dict:
             SELECT w.name AS winner, m.win_by_margin AS runs, m.season
             FROM matches m JOIN teams w ON w.id = m.winner_id
             WHERE m.win_by_type = 'runs' ORDER BY m.win_by_margin DESC LIMIT 3"""),
+        "fastest_fifties_by_balls": q("""
+            WITH cum AS (
+                SELECT d.match_id, d.innings, d.batter_id,
+                       SUM(d.runs_batter) OVER w AS cum_runs,
+                       ROW_NUMBER() OVER w AS balls_faced
+                FROM deliveries d WHERE d.wides = 0
+                WINDOW w AS (PARTITION BY d.match_id, d.innings, d.batter_id
+                             ORDER BY d.over_no, d.ball_no)
+            )
+            SELECT p.cricsheet_name AS player, MIN(c.balls_faced) AS balls, m.season
+            FROM cum c
+            JOIN players p ON p.id = c.batter_id
+            JOIN matches m ON m.id = c.match_id
+            WHERE c.cum_runs >= 50
+            GROUP BY p.cricsheet_name, c.match_id, c.innings, m.season
+            ORDER BY balls ASC LIMIT 3"""),
+        "most_player_of_match_awards": q("""
+            SELECT p.cricsheet_name AS player, COUNT(*) AS awards
+            FROM matches m JOIN players p ON p.id = m.player_of_match_id
+            GROUP BY 1 ORDER BY awards DESC LIMIT 3"""),
         "source": "computed live from cricsheet ball-by-ball; never hard-coded",
     }
 
@@ -336,6 +383,54 @@ def match_scorecard(match_id: str) -> dict:
         FROM bowling_innings bo JOIN players p ON p.id = bo.bowler_id
         WHERE bo.match_id = %s ORDER BY bo.wickets DESC LIMIT 8""", (match_id,))
     return {"match": info, "top_batting": batting, "top_bowling": bowling}
+
+
+def match_officials(match_id: str) -> dict:
+    """Umpires, TV umpire, match referee for one match."""
+    rows = q("SELECT person, role FROM officials WHERE match_id = %s ORDER BY role",
+             (match_id,))
+    return {"match_id": match_id, "officials": rows} if rows else \
+        {"error": f"no officials recorded for match '{match_id}'"}
+
+
+def umpire_record(name: str) -> dict:
+    """How many IPL matches a match official has officiated, by role and season span."""
+    rows = q("""SELECT o.role, COUNT(*) AS matches,
+                       MIN(m.season) AS first_season, MAX(m.season) AS last_season
+                FROM officials o JOIN matches m ON m.id = o.match_id
+                WHERE o.person ILIKE '%%' || %s || '%%'
+                GROUP BY o.role ORDER BY matches DESC""", (name,))
+    return {"official": name, "record": rows} if rows else \
+        {"error": f"no official matching '{name}'"}
+
+
+def team_squad(team: str, season: int) -> dict:
+    """Every player who appeared for a team in a season (from playing XIs)."""
+    rows = q("""SELECT p.cricsheet_name AS player, COUNT(*) AS matches
+                FROM match_players mp
+                JOIN matches m ON m.id = mp.match_id
+                JOIN teams t ON t.id = mp.team_id
+                JOIN players p ON p.id = mp.player_id
+                WHERE t.name ILIKE '%%' || %s || '%%' AND m.season = %s
+                GROUP BY p.cricsheet_name ORDER BY matches DESC""", (team, season))
+    return {"team": team, "season": season, "squad_size": len(rows),
+            "players": rows} if rows else \
+        {"error": f"no squad found for '{team}' in {season}"}
+
+
+def playing_xi(match_id: str) -> dict:
+    """The 11 (12 with Impact Player era) named players per side for one match."""
+    rows = q("""SELECT t.name AS team, p.cricsheet_name AS player
+                FROM match_players mp
+                JOIN teams t ON t.id = mp.team_id
+                JOIN players p ON p.id = mp.player_id
+                WHERE mp.match_id = %s ORDER BY t.name""", (match_id,))
+    if not rows:
+        return {"error": f"no XI recorded for match '{match_id}'"}
+    out: dict[str, list] = {}
+    for r in rows:
+        out.setdefault(r["team"], []).append(r["player"])
+    return {"match_id": match_id, "teams": out}
 
 
 def team_staff(team: str, season: int | None = None) -> dict:

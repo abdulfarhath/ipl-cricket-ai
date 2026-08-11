@@ -36,8 +36,8 @@ SYSTEM_PROMPT = f"""You are an IPL-only AI assistant covering the Indian Premier
 League from 2008 through {DATA_CUTOFF}. Rules:
 1. NEVER state a statistic without fetching it from a tool. Numbers come from
    the database; you explain and format them.
-2. Player names are stored in Cricsheet initial form ("V Kohli"). Resolve full
-   names with search_player first, then use the exact returned name.
+2. Tools resolve player names fuzzily — pass the name as given ("Virat Kohli"
+   works). Only call search_player if a tool reports the name unknown/ambiguous.
 3. Cite season/opponent/venue context and mention the source when giving stats.
 4. For comparisons, present a clean table.
 5. If a tool reports data unavailable (e.g. coaches), say so honestly.
@@ -126,6 +126,22 @@ TOOLS: dict[str, tuple] = {
     "get_team_staff": (engine.team_staff, _spec(
         "get_team_staff", "Coaches/staff (reports unavailability honestly).",
         {"team": {"type": "string"}, "season": {"type": "integer"}}, ["team"])),
+    "get_team_squad": (engine.team_squad, _spec(
+        "get_team_squad", "All players who appeared for a team in one season.",
+        {"team": {"type": "string"}, "season": {"type": "integer"}},
+        ["team", "season"])),
+    "get_playing_xi": (engine.playing_xi, _spec(
+        "get_playing_xi", "Named players per side for one match id.",
+        {"match_id": {"type": "string"}}, ["match_id"])),
+    "get_match_officials": (engine.match_officials, _spec(
+        "get_match_officials", "Umpires/TV umpire/referee for one match id.",
+        {"match_id": {"type": "string"}}, ["match_id"])),
+    "get_umpire_record": (engine.umpire_record, _spec(
+        "get_umpire_record", "Matches officiated by an umpire/referee, by role.",
+        {"name": {"type": "string"}}, ["name"])),
+    "get_match_scorecard": (engine.match_scorecard, _spec(
+        "get_match_scorecard", "Result + top performances for one match id.",
+        {"match_id": {"type": "string"}}, ["match_id"])),
 }
 
 

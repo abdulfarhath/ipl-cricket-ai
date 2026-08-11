@@ -109,6 +109,26 @@ def build_server():
         return _wrap(engine.team_staff, team, season)
 
     @mcp.tool()
+    def get_team_squad(team: str, season: int) -> str:
+        """All players who appeared for a team in one season (from playing XIs)."""
+        return _wrap(engine.team_squad, team, season)
+
+    @mcp.tool()
+    def get_playing_xi(match_id: str) -> str:
+        """Named players per side for one match."""
+        return _wrap(engine.playing_xi, match_id)
+
+    @mcp.tool()
+    def get_match_officials(match_id: str) -> str:
+        """Umpires, TV umpire, match referee for one match."""
+        return _wrap(engine.match_officials, match_id)
+
+    @mcp.tool()
+    def get_umpire_record(name: str) -> str:
+        """Matches officiated by an umpire/referee, by role and season span."""
+        return _wrap(engine.umpire_record, name)
+
+    @mcp.tool()
     def search_ipl_knowledge(query: str, top_k: int = 4) -> str:
         """Semantic search over curated IPL knowledge documents (history, rules)."""
         from rag.store import search
