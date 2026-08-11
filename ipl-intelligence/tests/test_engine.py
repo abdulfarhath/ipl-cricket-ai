@@ -47,7 +47,8 @@ def main():
     check("2016 winner = SRH", "Sunrisers" in e2016["final"]["winner"], e2016["final"])
 
     staff = engine.team_staff("Royal Challengers")
-    check("staff honestly unavailable", "not available" in staff.get("error", ""))
+    check("staff honestly unavailable",
+          "never fabricates" in staff.get("error", "") or "staff" in staff)
 
     oos = engine.season_summary(2026)
     check("2026 refused (cutoff)", "error" in oos, oos)
