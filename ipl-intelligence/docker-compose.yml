@@ -21,7 +21,7 @@ services:
   # one-shot: schema + cricsheet ingestion + validation + RAG embedding
   ingest:
     build: .
-    command: sh -c "python -m ingest.ingest && python -m rag.store"
+    command: sh -c "python -m ingest.ingest && python -m ingest.seed_bios && python -m rag.store"
     environment: &env
       DATABASE_URL: postgresql://ipl:${POSTGRES_PASSWORD:-ipl}@postgres:5432/ipl
       REDIS_URL: redis://redis:6379/0

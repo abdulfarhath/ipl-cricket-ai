@@ -358,6 +358,96 @@ def records() -> dict:
             SELECT p.cricsheet_name AS player, COUNT(*) AS awards
             FROM matches m JOIN players p ON p.id = m.player_of_match_id
             GROUP BY 1 ORDER BY awards DESC LIMIT 3"""),
+        "fastest_centuries_by_balls": q("""
+            WITH cum AS (
+                SELECT d.match_id, d.innings, d.batter_id,
+                       SUM(d.runs_batter) OVER w AS cum_runs,
+                       ROW_NUMBER() OVER w AS balls_faced
+                FROM deliveries d WHERE d.wides = 0
+                WINDOW w AS (PARTITION BY d.match_id, d.innings, d.batter_id
+                             ORDER BY d.over_no, d.ball_no))
+            SELECT p.cricsheet_name AS player, MIN(c.balls_faced) AS balls, m.season
+            FROM cum c JOIN players p ON p.id = c.batter_id
+            JOIN matches m ON m.id = c.match_id
+            WHERE c.cum_runs >= 100
+            GROUP BY p.cricsheet_name, c.match_id, c.innings, m.season
+            ORDER BY balls ASC LIMIT 3"""),
+        "most_centuries": q("""
+            SELECT p.cricsheet_name AS player,
+                   SUM(CASE WHEN bi.runs >= 100 THEN 1 ELSE 0 END) AS hundreds
+            FROM batting_innings bi JOIN players p ON p.id = bi.batter_id
+            GROUP BY 1 HAVING SUM(CASE WHEN bi.runs >= 100 THEN 1 ELSE 0 END) > 0
+            ORDER BY hundreds DESC LIMIT 3"""),
+        "most_fifties": q("""
+            SELECT p.cricsheet_name AS player,
+                   SUM(CASE WHEN bi.runs BETWEEN 50 AND 99 THEN 1 ELSE 0 END) AS fifties
+            FROM batting_innings bi JOIN players p ON p.id = bi.batter_id
+            GROUP BY 1 ORDER BY fifties DESC LIMIT 3"""),
+        "best_career_economy_min_300_balls": q("""
+            SELECT p.cricsheet_name AS player,
+                   ROUND(6.0 * SUM(bo.runs_conceded) / SUM(bo.balls), 2) AS economy,
+                   SUM(bo.balls) AS balls
+            FROM bowling_innings bo JOIN players p ON p.id = bo.bowler_id
+            GROUP BY 1 HAVING SUM(bo.balls) >= 300
+            ORDER BY economy ASC LIMIT 3"""),
+        "best_career_strike_rate_min_500_balls": q("""
+            SELECT p.cricsheet_name AS player,
+                   ROUND(100.0 * SUM(bi.runs) / SUM(bi.balls), 2) AS strike_rate,
+                   SUM(bi.runs) AS runs
+            FROM batting_innings bi JOIN players p ON p.id = bi.batter_id
+            GROUP BY 1 HAVING SUM(bi.balls) >= 500
+            ORDER BY strike_rate DESC LIMIT 3"""),
+        "most_maidens": q("""
+            WITH overs AS (
+                SELECT d.match_id, d.bowler_id, d.over_no,
+                       SUM(d.runs_total - d.byes - d.legbyes) AS conceded,
+                       COUNT(*) FILTER (WHERE d.wides = 0 AND d.noballs = 0) AS legal
+                FROM deliveries d GROUP BY 1, 2, 3)
+            SELECT p.cricsheet_name AS player, COUNT(*) AS maidens
+            FROM overs o JOIN players p ON p.id = o.bowler_id
+            WHERE o.conceded = 0 AND o.legal >= 6
+            GROUP BY 1 ORDER BY maidens DESC LIMIT 3"""),
+        "most_dot_balls_bowled": q("""
+            SELECT p.cricsheet_name AS player, SUM(bo.dot_balls) AS dot_balls
+            FROM bowling_innings bo JOIN players p ON p.id = bo.bowler_id
+            GROUP BY 1 ORDER BY dot_balls DESC LIMIT 3"""),
+        "most_career_catches": q("""
+            SELECT p.cricsheet_name AS player, COUNT(*) AS catches
+            FROM deliveries d JOIN players p ON p.id = d.fielder_id
+            WHERE d.dismissal_kind = 'caught'
+            GROUP BY 1 ORDER BY catches DESC LIMIT 3"""),
+        "lowest_completed_team_totals": q("""
+            SELECT t.name AS team, x.total, m.season
+            FROM (SELECT match_id, innings, batting_team_id,
+                         SUM(runs_total) AS total,
+                         SUM(CASE WHEN is_wicket THEN 1 ELSE 0 END) AS wkts,
+                         COUNT(*) FILTER (WHERE wides = 0 AND noballs = 0) AS legal
+                  FROM deliveries GROUP BY 1, 2, 3) x
+            JOIN teams t ON t.id = x.batting_team_id
+            JOIN matches m ON m.id = x.match_id
+            WHERE x.wkts >= 10 OR x.legal >= 120
+            ORDER BY x.total ASC LIMIT 3"""),
+        "largest_successful_chases": q("""
+            SELECT t.name AS team, x.total, m.season, opp.name AS opponent
+            FROM (SELECT match_id, batting_team_id, MIN(bowling_team_id) AS bowl_id,
+                         SUM(runs_total) AS total
+                  FROM deliveries WHERE innings = 2 GROUP BY 1, 2) x
+            JOIN matches m ON m.id = x.match_id AND m.winner_id = x.batting_team_id
+            JOIN teams t ON t.id = x.batting_team_id
+            JOIN teams opp ON opp.id = x.bowl_id
+            ORDER BY x.total DESC LIMIT 3"""),
+        "best_partnerships": q("""
+            SELECT p1.cricsheet_name AS batter_a, p2.cricsheet_name AS batter_b,
+                   x.runs, m.season
+            FROM (SELECT match_id, innings,
+                         LEAST(batter_id, non_striker_id) AS a,
+                         GREATEST(batter_id, non_striker_id) AS b,
+                         SUM(runs_total) AS runs
+                  FROM deliveries GROUP BY 1, 2, 3, 4) x
+            JOIN players p1 ON p1.id = x.a
+            JOIN players p2 ON p2.id = x.b
+            JOIN matches m ON m.id = x.match_id
+            ORDER BY x.runs DESC LIMIT 3"""),
         "source": "computed live from cricsheet ball-by-ball; never hard-coded",
     }
 
@@ -383,6 +473,175 @@ def match_scorecard(match_id: str) -> dict:
         FROM bowling_innings bo JOIN players p ON p.id = bo.bowler_id
         WHERE bo.match_id = %s ORDER BY bo.wickets DESC LIMIT 8""", (match_id,))
     return {"match": info, "top_batting": batting, "top_bowling": bowling}
+
+
+def points_table(season: int) -> dict:
+    """League-stage points table with wins/losses/points and computed NRR
+    (all-out innings counted as full 20 overs, per official method)."""
+    inn = q("""
+        WITH innings_agg AS (
+            SELECT d.match_id, d.innings, d.batting_team_id, d.bowling_team_id,
+                   SUM(d.runs_total) AS runs,
+                   SUM(CASE WHEN d.wides = 0 AND d.noballs = 0 THEN 1 ELSE 0 END) AS balls,
+                   SUM(CASE WHEN d.is_wicket AND d.dismissal_kind NOT IN
+                       ('retired hurt','retired out') THEN 1 ELSE 0 END) AS wickets
+            FROM deliveries d
+            JOIN matches m ON m.id = d.match_id
+            WHERE m.season = %s AND m.event_stage IS NULL
+            GROUP BY 1,2,3,4)
+        SELECT * FROM innings_agg""", (season,))
+    if not inn:
+        return {"error": f"no league-stage data for IPL {season}"}
+    stats: dict[int, dict] = {}
+    for r in inn:
+        overs = 20.0 if r["wickets"] >= 10 else r["balls"] / 6.0
+        f = stats.setdefault(r["batting_team_id"],
+                             {"runs_for": 0, "overs_faced": 0.0,
+                              "runs_against": 0, "overs_bowled": 0.0})
+        f["runs_for"] += r["runs"]
+        f["overs_faced"] += overs
+        a = stats.setdefault(r["bowling_team_id"],
+                             {"runs_for": 0, "overs_faced": 0.0,
+                              "runs_against": 0, "overs_bowled": 0.0})
+        a["runs_against"] += r["runs"]
+        a["overs_bowled"] += overs
+    results = q("""
+        SELECT t.id, t.name,
+               COUNT(*) AS played,
+               SUM(CASE WHEN m.winner_id = t.id THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN m.winner_id IS NOT NULL AND m.winner_id != t.id
+                   THEN 1 ELSE 0 END) AS losses,
+               SUM(CASE WHEN m.winner_id IS NULL THEN 1 ELSE 0 END) AS no_results
+        FROM matches m JOIN teams t ON t.id IN (m.team1_id, m.team2_id)
+        WHERE m.season = %s AND m.event_stage IS NULL
+        GROUP BY t.id, t.name""", (season,))
+    table = []
+    for r in results:
+        s = stats.get(r["id"], {})
+        nrr = None
+        if s.get("overs_faced") and s.get("overs_bowled"):
+            nrr = round(s["runs_for"] / s["overs_faced"]
+                        - s["runs_against"] / s["overs_bowled"], 3)
+        table.append({"team": r["name"], "played": r["played"], "wins": r["wins"],
+                      "losses": r["losses"], "no_results": r["no_results"],
+                      "points": 2 * r["wins"] + r["no_results"], "nrr": nrr})
+    table.sort(key=lambda x: (-x["points"], -(x["nrr"] or -99)))
+    return {"season": season, "league_stage_table": table,
+            "note": "computed from ball-by-ball; NRR uses full 20 overs for all-out innings"}
+
+
+def team_history(team: str) -> dict:
+    """Titles, final appearances, playoff appearances, per-season W/L."""
+    seasons = q("""
+        SELECT m.season,
+               COUNT(*) AS played,
+               SUM(CASE WHEN m.winner_id = t.id THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN m.winner_id IS NOT NULL AND m.winner_id != t.id
+                   THEN 1 ELSE 0 END) AS losses
+        FROM matches m JOIN teams t ON t.id IN (m.team1_id, m.team2_id)
+        WHERE t.name ILIKE '%%'||%s||'%%'
+        GROUP BY m.season ORDER BY m.season""", (team,))
+    if not seasons:
+        return {"error": f"no team matching '{team}'"}
+    finals = q("""
+        SELECT m.season, (m.winner_id = t.id) AS won
+        FROM matches m JOIN teams t ON t.id IN (m.team1_id, m.team2_id)
+        WHERE t.name ILIKE '%%'||%s||'%%' AND m.event_stage = 'Final'
+        ORDER BY m.season""", (team,))
+    playoffs = q("""
+        SELECT DISTINCT m.season
+        FROM matches m JOIN teams t ON t.id IN (m.team1_id, m.team2_id)
+        WHERE t.name ILIKE '%%'||%s||'%%' AND m.event_stage IS NOT NULL""", (team,))
+    return {"team": team,
+            "titles": [f["season"] for f in finals if f["won"]],
+            "final_appearances": [f["season"] for f in finals],
+            "playoff_seasons": sorted(p["season"] for p in playoffs),
+            "seasons": seasons,
+            "note": "finals/playoffs detected from match stage data (2011+ tagging is most complete)"}
+
+
+def player_profile(player: str) -> dict:
+    """Profile: full name, nationality, role, styles (curated for famous
+    players), plus teams played for and career span from match data."""
+    pid = _pid(player)
+    if not pid:
+        return {"error": f"unknown player '{player}' — use search_player"}
+    p = q1("SELECT * FROM players WHERE id = %s", (pid,))
+    teams = q("""
+        SELECT t.name AS team, MIN(m.season) AS first, MAX(m.season) AS last,
+               COUNT(*) AS matches
+        FROM match_players mp
+        JOIN teams t ON t.id = mp.team_id
+        JOIN matches m ON m.id = mp.match_id
+        WHERE mp.player_id = %s GROUP BY t.name ORDER BY MIN(m.season)""", (pid,))
+    pom = q1("SELECT COUNT(*) AS c FROM matches WHERE player_of_match_id = %s", (pid,))
+    out = {"player": p["cricsheet_name"], "teams": teams,
+           "player_of_match_awards": pom["c"]}
+    for k in ("full_name", "nationality", "role", "batting_style", "bowling_style"):
+        out[k] = p[k] or "not on file (curated bios cover the most famous players)"
+    return out
+
+
+def player_team_history(player: str) -> dict:
+    """Season-by-season franchise history — team changes show as transfers/auction moves."""
+    pid = _pid(player)
+    if not pid:
+        return {"error": f"unknown player '{player}' — use search_player"}
+    rows = q("""
+        SELECT m.season, t.name AS team, COUNT(*) AS matches
+        FROM match_players mp
+        JOIN teams t ON t.id = mp.team_id
+        JOIN matches m ON m.id = mp.match_id
+        WHERE mp.player_id = %s
+        GROUP BY m.season, t.name ORDER BY m.season""", (pid,))
+    moves = []
+    prev = None
+    for r in rows:
+        if prev and r["team"] != prev:
+            moves.append(f"{r['season']}: moved to {r['team']}")
+        prev = r["team"]
+    return {"player": player, "by_season": rows, "team_changes": moves}
+
+
+def match_partnerships(match_id: str) -> dict:
+    """Partnership runs per batting pair in one match."""
+    rows = q("""
+        SELECT d.innings, t.name AS batting_team,
+               p1.cricsheet_name AS batter_a, p2.cricsheet_name AS batter_b,
+               SUM(d.runs_total) AS partnership_runs, COUNT(*) AS balls
+        FROM deliveries d
+        JOIN players p1 ON p1.id = LEAST(d.batter_id, d.non_striker_id)
+        JOIN players p2 ON p2.id = GREATEST(d.batter_id, d.non_striker_id)
+        JOIN teams t ON t.id = d.batting_team_id
+        WHERE d.match_id = %s
+        GROUP BY 1, 2, 3, 4 ORDER BY partnership_runs DESC""", (match_id,))
+    return {"match_id": match_id, "partnerships": rows[:12]} if rows else \
+        {"error": f"unknown match id '{match_id}'"}
+
+
+def fall_of_wickets(match_id: str) -> dict:
+    """Score at each dismissal, in order, per innings."""
+    rows = q("""
+        SELECT d.innings, d.over_no, d.ball_no,
+               SUM(d.runs_total) OVER (PARTITION BY d.innings
+                   ORDER BY d.over_no, d.ball_no) AS team_score,
+               d.is_wicket, p.cricsheet_name AS player_out, d.dismissal_kind
+        FROM deliveries d
+        LEFT JOIN players p ON p.id = d.player_out_id
+        WHERE d.match_id = %s ORDER BY d.innings, d.over_no, d.ball_no""",
+        (match_id,))
+    if not rows:
+        return {"error": f"unknown match id '{match_id}'"}
+    fow: dict[int, list] = {}
+    counts: dict[int, int] = {}
+    for r in rows:
+        if r["is_wicket"] and r["player_out"]:
+            n = counts.get(r["innings"], 0) + 1
+            counts[r["innings"]] = n
+            fow.setdefault(r["innings"], []).append(
+                f"{n}-{r['team_score']} ({r['player_out']}, "
+                f"{r['over_no']}.{r['ball_no']} ov, {r['dismissal_kind']})")
+    return {"match_id": match_id, "fall_of_wickets": fow}
 
 
 def match_officials(match_id: str) -> dict:

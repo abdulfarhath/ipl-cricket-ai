@@ -129,6 +129,36 @@ def build_server():
         return _wrap(engine.umpire_record, name)
 
     @mcp.tool()
+    def get_points_table(season: int) -> str:
+        """League points table with wins/losses/points/NRR for one season."""
+        return _wrap(engine.points_table, season)
+
+    @mcp.tool()
+    def get_team_history(team: str) -> str:
+        """Titles, final/playoff appearances, per-season W/L for a franchise."""
+        return _wrap(engine.team_history, team)
+
+    @mcp.tool()
+    def get_player_profile(player: str) -> str:
+        """Bio + teams played for + player-of-the-match count."""
+        return _wrap(engine.player_profile, player)
+
+    @mcp.tool()
+    def get_player_team_history(player: str) -> str:
+        """Franchise history by season, with team changes."""
+        return _wrap(engine.player_team_history, player)
+
+    @mcp.tool()
+    def get_match_partnerships(match_id: str) -> str:
+        """Partnership runs per batting pair in one match."""
+        return _wrap(engine.match_partnerships, match_id)
+
+    @mcp.tool()
+    def get_fall_of_wickets(match_id: str) -> str:
+        """Score at each dismissal for one match."""
+        return _wrap(engine.fall_of_wickets, match_id)
+
+    @mcp.tool()
     def search_ipl_knowledge(query: str, top_k: int = 4) -> str:
         """Semantic search over curated IPL knowledge documents (history, rules)."""
         from rag.store import search

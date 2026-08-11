@@ -150,6 +150,26 @@ TOOLS: dict[str, tuple] = {
     "get_match_scorecard": (engine.match_scorecard, _spec(
         "get_match_scorecard", "Result + top performances for one match id.",
         {"match_id": {"type": "string"}}, ["match_id"])),
+    "get_points_table": (engine.points_table, _spec(
+        "get_points_table", "League points table with W/L/points/NRR for a season.",
+        {"season": {"type": "integer"}}, ["season"])),
+    "get_team_history": (engine.team_history, _spec(
+        "get_team_history", "Titles, final and playoff appearances, per-season W/L.",
+        {"team": {"type": "string"}}, ["team"])),
+    "get_player_profile": (engine.player_profile, _spec(
+        "get_player_profile",
+        "Bio (full name, nationality, role, styles) + teams and POM awards.",
+        {"player": {"type": "string"}}, ["player"])),
+    "get_player_team_history": (engine.player_team_history, _spec(
+        "get_player_team_history",
+        "Season-by-season franchise history and team changes (transfers).",
+        {"player": {"type": "string"}}, ["player"])),
+    "get_match_partnerships": (engine.match_partnerships, _spec(
+        "get_match_partnerships", "Partnership runs per pair in one match.",
+        {"match_id": {"type": "string"}}, ["match_id"])),
+    "get_fall_of_wickets": (engine.fall_of_wickets, _spec(
+        "get_fall_of_wickets", "Score at each dismissal for one match.",
+        {"match_id": {"type": "string"}}, ["match_id"])),
 }
 
 
