@@ -434,11 +434,16 @@ def playing_xi(match_id: str) -> dict:
 
 
 def team_staff(team: str, season: int | None = None) -> dict:
-    rows = q("SELECT * FROM team_staff ts JOIN teams t ON t.id = ts.team_id "
-             "WHERE t.name ILIKE '%%'||%s||'%%'", (team,))
+    where, params = "t.name ILIKE '%%'||%s||'%%'", [team]
+    if season:
+        where += " AND ts.season = %s"
+        params.append(season)
+    rows = q(f"""SELECT t.name AS team, ts.season, ts.person, ts.role
+                 FROM team_staff ts JOIN teams t ON t.id = ts.team_id
+                 WHERE {where} ORDER BY ts.season, ts.role""", tuple(params))
     if not rows:
-        return {"error": "coach/support-staff data is not available: no free "
-                         "licensed source provides it, and this system never "
-                         "fabricates data. The ingestion interface exists "
-                         "(team_staff table) for when a licensed source is added."}
-    return {"staff": rows}
+        return {"error": "coach/support-staff data is not loaded for this query: "
+                         "no free licensed source provides it, and this system "
+                         "never fabricates data. Rows can be added via the manual "
+                         "CSV importer (ingest/staff_csv.py) with provenance."}
+    return {"staff": rows, "source": "manually verified CSV (see data_sources)"}
