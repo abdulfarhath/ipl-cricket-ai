@@ -62,7 +62,13 @@ _OOS_MARKERS = ("football", "soccer", "nba", "quantum", "python", "prime ministe
 _CURRENT_MARKERS = ("2026", "today", "tomorrow", "live score", "next match",
                     "upcoming", "current squad", "latest news")
 _KNOWLEDGE_MARKERS = ("why", "history", "founded", "started", "rule", "explain",
-                      "impact", "how did", "what is the ipl", "when did")
+                      "impact", "how did", "what is the ipl", "when did",
+                      "position", "mid-on", "mid on", "mid-off", "mid off",
+                      "fielding", "slip", "fine leg", "lbw", "dismissal",
+                      "no-ball", "no ball", "free hit", "crease", "pitch",
+                      "powerplay", "super over", "dls", "umpire signal",
+                      "auction", "retention", "timeout", "drs", "coach role",
+                      "how does", "what happens", "meaning", "means")
 
 
 def route(question: str) -> Intent:
@@ -170,7 +176,21 @@ TOOLS: dict[str, tuple] = {
     "get_fall_of_wickets": (engine.fall_of_wickets, _spec(
         "get_fall_of_wickets", "Score at each dismissal for one match.",
         {"match_id": {"type": "string"}}, ["match_id"])),
+    "search_ipl_knowledge": (None, _spec(  # bound lazily below (imports rag)
+        "search_ipl_knowledge",
+        "Explanations of cricket/IPL concepts: rules, fielding positions, "
+        "dismissal types, umpire signals, match flow, coach roles, history.",
+        {"query": {"type": "string"}}, ["query"])),
 }
+
+
+def _knowledge_search(query: str) -> list[dict]:
+    from rag.store import search
+    return search(query, top_k=3)
+
+
+TOOLS["search_ipl_knowledge"] = (_knowledge_search,
+                                 TOOLS["search_ipl_knowledge"][1])
 
 
 def _stats_agent(provider: LLMProvider, question: str, history: list[dict],
