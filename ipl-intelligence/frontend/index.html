@@ -174,42 +174,100 @@ function md(text) {
 /* ---- voice: browser speech APIs, no keys, no extra latency ---- */
 const mic = document.getElementById('mic'), speaker = document.getElementById('speaker');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let speakReplies = false, askedByVoice = false;
+let speakReplies = false, askedByVoice = false, listening = false;
 
-if (!SR) { mic.style.display = 'none'; }
-else {
+/* status toast so voice problems are visible, never silent */
+const toast = document.createElement('div');
+toast.style.cssText = 'position:fixed;bottom:5.2rem;left:50%;transform:translateX(-50%);' +
+  'background:rgba(8,14,28,.95);color:#eef2fa;border:1px solid rgba(240,185,60,.5);' +
+  'border-radius:10px;padding:.5rem 1rem;font-size:.85rem;z-index:9;display:none;max-width:90%';
+document.body.appendChild(toast);
+let toastTimer;
+function note(msg, ms = 3500) {
+  toast.textContent = msg; toast.style.display = 'block';
+  clearTimeout(toastTimer);
+  if (ms) toastTimer = setTimeout(() => toast.style.display = 'none', ms);
+}
+
+/* voices load asynchronously in Chrome — warm them up early */
+let voices = [];
+function loadVoices() { voices = speechSynthesis.getVoices() || []; }
+if ('speechSynthesis' in window) {
+  loadVoices();
+  speechSynthesis.onvoiceschanged = loadVoices;
+}
+
+const MIC_ERRORS = {
+  'not-allowed': 'Microphone blocked. Click the 🔒/🎙 icon in the address bar and Allow microphone, then try again.',
+  'service-not-allowed': 'Speech service blocked by the browser. Use Chrome or Edge.',
+  'no-speech': 'No speech heard — tap 🎤 and speak clearly.',
+  'audio-capture': 'No microphone found. Check Windows sound settings.',
+  'network': 'Speech-to-text needs internet (browser sends audio to its speech service). Check connection.',
+  'aborted': 'Listening cancelled.',
+};
+
+if (!SR) {
+  mic.style.display = 'none';
+  note('Voice input needs Chrome or Edge — this browser does not support it.', 6000);
+} else {
   const rec = new SR();
   rec.lang = 'en-IN'; rec.interimResults = false; rec.maxAlternatives = 1;
   mic.addEventListener('click', () => {
+    if (listening) { rec.abort(); return; }
     speechSynthesis.cancel();
-    mic.classList.add('listening'); mic.textContent = '👂';
-    rec.start();
+    try {
+      rec.start(); listening = true;
+      mic.classList.add('listening'); mic.textContent = '👂';
+      note('Listening… speak your question', 0);
+    } catch (e) { note('Could not start microphone: ' + e.message); }
   });
   rec.onresult = e => {
     q.value = e.results[0][0].transcript;
+    note('Heard: "' + q.value + '"');
     askedByVoice = true;
     f.requestSubmit();
   };
-  rec.onend = () => { mic.classList.remove('listening'); mic.textContent = '🎤'; };
-  rec.onerror = () => { mic.classList.remove('listening'); mic.textContent = '🎤'; };
+  rec.onend = () => {
+    listening = false;
+    mic.classList.remove('listening'); mic.textContent = '🎤';
+    if (toast.textContent.startsWith('Listening')) toast.style.display = 'none';
+  };
+  rec.onerror = e => {
+    listening = false;
+    mic.classList.remove('listening'); mic.textContent = '🎤';
+    note(MIC_ERRORS[e.error] || ('Voice input error: ' + e.error), 6000);
+  };
 }
 
 speaker.addEventListener('click', () => {
   speakReplies = !speakReplies;
   speaker.setAttribute('aria-pressed', String(speakReplies));
-  if (!speakReplies) speechSynthesis.cancel();
+  if (speakReplies) {
+    speak('Voice replies on.');   // user-gesture test: you must hear this
+  } else { speechSynthesis.cancel(); }
 });
 
 function speak(text) {
-  if (!('speechSynthesis' in window)) return;
+  if (!('speechSynthesis' in window)) { note('This browser cannot speak answers.'); return; }
   speechSynthesis.cancel();
   const clean = text.replace(/[*#|_`]/g, ' ').replace(/^\s*source\s*:.*$/gim, '')
-                    .replace(/\s+/g, ' ').trim().slice(0, 800);
-  const u = new SpeechSynthesisUtterance(clean);
-  u.lang = 'en-IN'; u.rate = 1.02;
-  const v = speechSynthesis.getVoices().find(v => v.lang.startsWith('en'));
-  if (v) u.voice = v;
-  speechSynthesis.speak(u);
+                    .replace(/\s+/g, ' ').trim();
+  /* chunk sentences — long single utterances go silent in Chrome */
+  const chunks = clean.match(/[^.!?]+[.!?]?/g) || [clean];
+  loadVoices();
+  const v = voices.find(x => x.lang === 'en-IN') ||
+            voices.find(x => x.lang.startsWith('en')) || null;
+  chunks.slice(0, 12).forEach(c => {
+    const u = new SpeechSynthesisUtterance(c.trim());
+    if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'en-US'; }
+    u.rate = 1.02;
+    speechSynthesis.speak(u);
+  });
+  /* Chrome pauses long speech after ~15s — keep it alive */
+  const keepAlive = setInterval(() => {
+    if (!speechSynthesis.speaking) { clearInterval(keepAlive); return; }
+    speechSynthesis.pause(); speechSynthesis.resume();
+  }, 12000);
 }
 
 function add(cls, text) {
